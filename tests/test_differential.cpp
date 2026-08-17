@@ -86,6 +86,15 @@ TEST_CASE(differential_fast_book_matches_naive_book_on_randomized_flow) {
             auto t2 = naive.add_market_order(id, side, qty);
             CHECK(trades_equal(t1, t2));
             apply_fills(t1);
+        } else if (op < 25 && !live_ids.empty()) {
+            Side side = side_dist(rng) == 0 ? Side::Buy : Side::Sell;
+            Price price = price_dist(rng);
+            Qty qty = qty_dist(rng);
+            OrderId id = next_id++;
+            auto t1 = fast.add_ioc_order(id, side, price, qty);
+            auto t2 = naive.add_ioc_order(id, side, price, qty);
+            CHECK(trades_equal(t1, t2));
+            apply_fills(t1);
         } else {
             Side side = side_dist(rng) == 0 ? Side::Buy : Side::Sell;
             Price price = price_dist(rng);
@@ -109,5 +118,21 @@ TEST_CASE(differential_fast_book_matches_naive_book_on_randomized_flow) {
         if (fast.has_bid()) CHECK_EQ(fast.best_bid(), naive.best_bid());
         if (fast.has_ask()) CHECK_EQ(fast.best_ask(), naive.best_ask());
         CHECK_EQ(fast.order_count(), naive.order_count());
+
+        // Full L2 depth comparison every few hundred ops (it's O(book) per
+        // call, so doing it every op would dominate the test's runtime
+        // without adding much: depth errors don't self-repair, they linger).
+        if (i % 250 == 0) {
+            for (Side side : {Side::Buy, Side::Sell}) {
+                auto l1 = fast.top_levels(side, 10);
+                auto l2 = naive.top_levels(side, 10);
+                CHECK_EQ(l1.size(), l2.size());
+                for (std::size_t k = 0; k < l1.size(); ++k) {
+                    CHECK_EQ(l1[k].price, l2[k].price);
+                    CHECK_EQ(l1[k].quantity, l2[k].quantity);
+                    CHECK_EQ(l1[k].order_count, l2[k].order_count);
+                }
+            }
+        }
     }
 }

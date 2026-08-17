@@ -4,6 +4,7 @@
 #include <limits>
 #include <list>
 #include <map>
+#include <stdexcept>
 #include <unordered_map>
 #include <vector>
 
@@ -28,11 +29,19 @@ namespace lob {
 class NaiveOrderBook {
 public:
     std::vector<Trade> add_limit_order(OrderId id, Side side, Price price, Qty quantity) {
+        require_unused_id(id);
         std::vector<Trade> trades;
         Qty remaining = match_against_book(id, side, price, quantity, trades);
         if (remaining > 0) {
             rest_order(id, side, price, remaining);
         }
+        return trades;
+    }
+
+    std::vector<Trade> add_ioc_order(OrderId id, Side side, Price price, Qty quantity) {
+        require_unused_id(id);
+        std::vector<Trade> trades;
+        match_against_book(id, side, price, quantity, trades);
         return trades;
     }
 
@@ -78,6 +87,26 @@ public:
         return total;
     }
 
+    std::vector<LevelView> top_levels(Side side, std::size_t max_levels) const {
+        std::vector<LevelView> out;
+        out.reserve(max_levels);
+        auto emit = [&](Price price, const std::list<Order>& orders) {
+            Qty total = 0;
+            for (const Order& o : orders) total += o.quantity;
+            out.push_back(LevelView{price, total, static_cast<int>(orders.size())});
+        };
+        if (side == Side::Buy) {
+            for (auto it = bids_.rbegin(); it != bids_.rend() && out.size() < max_levels; ++it) {
+                emit(it->first, it->second);
+            }
+        } else {
+            for (auto it = asks_.begin(); it != asks_.end() && out.size() < max_levels; ++it) {
+                emit(it->first, it->second);
+            }
+        }
+        return out;
+    }
+
     std::size_t order_count() const { return order_lookup_.size(); }
 
 private:
@@ -86,6 +115,12 @@ private:
         Side side;
         std::list<Order>::iterator it;
     };
+
+    void require_unused_id(OrderId id) const {
+        if (order_lookup_.find(id) != order_lookup_.end()) {
+            throw std::invalid_argument("NaiveOrderBook: duplicate order id");
+        }
+    }
 
     Qty match_against_book(OrderId aggressor_id, Side side, Price price, Qty quantity, std::vector<Trade>& trades) {
         Qty remaining = quantity;

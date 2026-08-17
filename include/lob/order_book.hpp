@@ -54,11 +54,23 @@ public:
 
     std::vector<Trade> add_limit_order(OrderId id, Side side, Price price, Qty quantity) {
         require_in_range(price);
+        require_unused_id(id);
         std::vector<Trade> trades;
         Qty remaining = match_against_book(id, side, price, quantity, trades);
         if (remaining > 0) {
             rest_order(id, side, price, remaining);
         }
+        return trades;
+    }
+
+    // Immediate-or-cancel: matches whatever is marketable at `price` right
+    // now and discards the remainder instead of resting it. Same matching
+    // path as a limit order -- the only difference is the no-rest policy.
+    std::vector<Trade> add_ioc_order(OrderId id, Side side, Price price, Qty quantity) {
+        require_in_range(price);
+        require_unused_id(id);
+        std::vector<Trade> trades;
+        match_against_book(id, side, price, quantity, trades);
         return trades;
     }
 
@@ -114,6 +126,29 @@ public:
         return level_for(side, price).total_quantity;
     }
 
+    // L2 depth snapshot: the top `max_levels` non-empty levels on one side,
+    // ordered from the touch outward (best first). This is the read path a
+    // market-data publisher or a strategy's signal calculation would use;
+    // it's O(scan distance + levels returned), not O(book size), because
+    // it walks the same contiguous array the matching path uses.
+    std::vector<LevelView> top_levels(Side side, std::size_t max_levels) const {
+        std::vector<LevelView> out;
+        out.reserve(max_levels);
+        if (side == Side::Buy) {
+            for (int idx = best_bid_index_; idx >= 0 && out.size() < max_levels; --idx) {
+                const PriceLevel& level = bid_levels_[static_cast<std::size_t>(idx)];
+                if (!level.empty()) out.push_back(LevelView{level.price, level.total_quantity, level.order_count});
+            }
+        } else {
+            int n = static_cast<int>(ask_levels_.size());
+            for (int idx = best_ask_index_; idx < n && out.size() < max_levels; ++idx) {
+                const PriceLevel& level = ask_levels_[static_cast<std::size_t>(idx)];
+                if (!level.empty()) out.push_back(LevelView{level.price, level.total_quantity, level.order_count});
+            }
+        }
+        return out;
+    }
+
     std::size_t order_count() const { return order_lookup_.size(); }
     std::size_t pool_in_use() const { return order_pool_.in_use(); }
 
@@ -123,6 +158,16 @@ private:
     void require_in_range(Price price) const {
         if (price < min_price_ || price > max_price_) {
             throw std::out_of_range("OrderBook: price outside configured book range");
+        }
+    }
+
+    // Order IDs must be unique among live orders. Silently accepting a
+    // duplicate would overwrite the lookup entry for the earlier order,
+    // making it uncancellable and leaking its pool slot -- real venues
+    // reject duplicate client order IDs at the gateway for the same reason.
+    void require_unused_id(OrderId id) const {
+        if (order_lookup_.find(id) != order_lookup_.end()) {
+            throw std::invalid_argument("OrderBook: duplicate order id");
         }
     }
 

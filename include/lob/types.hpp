@@ -27,6 +27,16 @@ struct Trade {
     Qty quantity;
 };
 
+// One aggregated price level as seen from outside the book -- what a
+// market-data feed would publish as L2 depth. Deliberately a plain value
+// type with no pointers into book internals, so a snapshot stays valid
+// after the book mutates.
+struct LevelView {
+    Price price;
+    Qty quantity;      // total resting quantity at this price
+    int order_count;   // number of resting orders at this price
+};
+
 // One resting order. Intentionally lean and pointer-linked (no owned
 // containers inside) so it fits cheaply in an intrusive doubly-linked list
 // per price level -- see price_level.hpp.

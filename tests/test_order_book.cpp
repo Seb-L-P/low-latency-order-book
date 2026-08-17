@@ -126,6 +126,59 @@ TEST_CASE(market_order_walks_book_and_never_rests_unfilled_remainder) {
     CHECK_EQ(book.order_count(), static_cast<std::size_t>(0));  // remainder did not rest
 }
 
+TEST_CASE(duplicate_order_id_is_rejected_and_book_state_is_untouched) {
+    OrderBook book = make_book();
+    book.add_limit_order(1, Side::Buy, 100, 10);
+
+    bool threw = false;
+    try {
+        book.add_limit_order(1, Side::Buy, 99, 5);  // same id, still live
+    } catch (const std::invalid_argument&) {
+        threw = true;
+    }
+    CHECK(threw);
+    CHECK_EQ(book.order_count(), static_cast<std::size_t>(1));
+    CHECK_EQ(book.depth_at(Side::Buy, 99), static_cast<Qty>(0));
+    CHECK(book.cancel_order(1));  // the original order is still fully manageable
+
+    // Once the original is gone, the id is free to reuse -- uniqueness is
+    // among *live* orders, matching how client order ids actually work.
+    auto trades = book.add_limit_order(1, Side::Buy, 100, 10);
+    CHECK(trades.empty());
+    CHECK_EQ(book.order_count(), static_cast<std::size_t>(1));
+}
+
+TEST_CASE(ioc_order_fills_what_it_can_and_never_rests) {
+    OrderBook book = make_book();
+    book.add_limit_order(1, Side::Sell, 100, 5);
+    book.add_limit_order(2, Side::Sell, 102, 5);  // not marketable at limit 101
+
+    auto trades = book.add_ioc_order(3, Side::Buy, 101, 20);
+    CHECK_EQ(trades.size(), static_cast<std::size_t>(1));
+    CHECK_EQ(trades[0].price, static_cast<Price>(100));
+    CHECK_EQ(trades[0].quantity, static_cast<Qty>(5));
+    CHECK(!book.has_bid());  // the 15 unfilled units were discarded, not rested
+    CHECK_EQ(book.best_ask(), static_cast<Price>(102));
+}
+
+TEST_CASE(top_levels_returns_aggregated_depth_best_first) {
+    OrderBook book = make_book();
+    book.add_limit_order(1, Side::Buy, 100, 10);
+    book.add_limit_order(2, Side::Buy, 100, 5);   // second order, same level
+    book.add_limit_order(3, Side::Buy, 98, 7);    // gap at 99 must be skipped
+    book.add_limit_order(4, Side::Buy, 97, 3);
+
+    auto levels = book.top_levels(Side::Buy, 2);
+    CHECK_EQ(levels.size(), static_cast<std::size_t>(2));
+    CHECK_EQ(levels[0].price, static_cast<Price>(100));
+    CHECK_EQ(levels[0].quantity, static_cast<Qty>(15));
+    CHECK_EQ(levels[0].order_count, 2);
+    CHECK_EQ(levels[1].price, static_cast<Price>(98));
+    CHECK_EQ(levels[1].quantity, static_cast<Qty>(7));
+
+    CHECK(book.top_levels(Side::Sell, 5).empty());
+}
+
 TEST_CASE(out_of_range_price_throws) {
     OrderBook book = make_book();
     bool threw = false;
